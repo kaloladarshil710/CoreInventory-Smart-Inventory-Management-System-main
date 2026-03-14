@@ -13,11 +13,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         denyAction('manage_deliveries', '/pages/deliveries.php');
         $customer    = trim($_POST['customer_name'] ?? '');
         $warehouseId = (int)$_POST['warehouse_id'];
-        $notes       = trim($_POST['notes'] ?? '');
+        // BUG FIX: deliveries table has no 'notes' column — removed from INSERT
         $ref         = generateRef('DLV');
 
-        $db->prepare("INSERT INTO deliveries (reference, customer_name, warehouse_id, notes, status, created_by) VALUES (?,?,?,?,'draft',?)")
-           ->execute([$ref, $customer, $warehouseId, $notes, $_SESSION['user_id']]);
+        $db->prepare("INSERT INTO deliveries (reference, customer_name, warehouse_id, status, created_by) VALUES (?,?,?,'draft',?)")
+           ->execute([$ref, $customer, $warehouseId, $_SESSION['user_id']]);
         $did = $db->lastInsertId();
 
         foreach ($_POST['items'] ?? [] as $item) {
@@ -46,32 +46,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // First pass — check all stock
             foreach ($allItems as $item) {
-                $avail = $db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?");
+                $avail = $db->prepare("SELECT COALESCE(SUM(quantity),0) FROM stock WHERE product_id=? AND warehouse_id=?");
                 $avail->execute([$item['product_id'], $delivery['warehouse_id']]);
-                $avail = (float)$avail->fetchColumn();
-                if ($avail < $item['quantity']) {
+                $availQty = (float)$avail->fetchColumn();
+                if ($availQty < $item['quantity']) {
                     $pName = $db->prepare("SELECT name FROM products WHERE id=?");
                     $pName->execute([$item['product_id']]);
-                    $pName = $pName->fetchColumn();
-                    setFlash('error', "Insufficient stock for <strong>{$pName}</strong>. Available: {$avail}, Required: {$item['quantity']}");
+                    $pNameStr = $pName->fetchColumn();
+                    setFlash('error', "Insufficient stock for <strong>{$pNameStr}</strong>. Available: {$availQty}, Required: {$item['quantity']}");
                     header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
                 }
             }
 
             // Second pass — deduct stock
-            foreach ($allItems as $item) {
-                $db->prepare("UPDATE stock SET quantity=quantity-? WHERE product_id=? AND warehouse_id=?")
-                   ->execute([$item['quantity'], $item['product_id'], $delivery['warehouse_id']]);
-                $newQty = (float)$db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?")->execute([$item['product_id'], $delivery['warehouse_id']]) ?: 0;
-                $nq = $db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?");
-                $nq->execute([$item['product_id'], $delivery['warehouse_id']]);
-                $newQty = (float)$nq->fetchColumn();
+            // BUG FIX: Use transaction to prevent partial updates
+            $db->beginTransaction();
+            try {
+                foreach ($allItems as $item) {
+                    $db->prepare("UPDATE stock SET quantity=quantity-? WHERE product_id=? AND warehouse_id=?")
+                       ->execute([$item['quantity'], $item['product_id'], $delivery['warehouse_id']]);
+                    // BUG FIX: removed dead/incorrect $newQty assignment; fetch correctly
+                    $nq = $db->prepare("SELECT COALESCE(SUM(quantity),0) FROM stock WHERE product_id=? AND warehouse_id=?");
+                    $nq->execute([$item['product_id'], $delivery['warehouse_id']]);
+                    $newQty = (float)$nq->fetchColumn();
 
-                $db->prepare("INSERT INTO stock_ledger (product_id, warehouse_id, operation_type, reference_id, reference_type, quantity_change, quantity_after, created_by) VALUES (?,?,'delivery',?,'delivery',?,?,?)")
-                   ->execute([$item['product_id'], $delivery['warehouse_id'], $did, -$item['quantity'], $newQty, $_SESSION['user_id']]);
+                    $db->prepare("INSERT INTO stock_ledger (product_id, warehouse_id, operation_type, reference_id, reference_type, quantity_change, quantity_after, created_by) VALUES (?,?,'delivery',?,'delivery',?,?,?)")
+                       ->execute([$item['product_id'], $delivery['warehouse_id'], $did, -$item['quantity'], $newQty, $_SESSION['user_id']]);
+                }
+                $db->prepare("UPDATE deliveries SET status='done', validated_at=NOW() WHERE id=?")->execute([$did]);
+                $db->commit();
+                setFlash('success', 'Delivery validated. Stock deducted successfully.');
+            } catch (Exception $e) {
+                $db->rollBack();
+                setFlash('error', 'An error occurred while validating the delivery. Please try again.');
             }
-            $db->prepare("UPDATE deliveries SET status='done', validated_at=NOW() WHERE id=?")->execute([$did]);
-            setFlash('success', 'Delivery validated. Stock deducted successfully.');
         }
         header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
     }
@@ -106,7 +114,6 @@ $products   = $db->query("SELECT id, name, sku, unit_of_measure FROM products WH
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
-<!-- Pass product data to JS safely -->
 <script>
 window.PRODUCT_DATA = <?= json_encode(array_values($products), JSON_HEX_TAG | JSON_HEX_QUOT) ?>;
 </script>
@@ -117,7 +124,6 @@ window.PRODUCT_DATA = <?= json_encode(array_values($products), JSON_HEX_TAG | JS
         <p>Manage outgoing stock to customers</p>
     </div>
     <div style="display:flex;gap:10px;align-items:center;">
-        <!-- Status filter -->
         <form method="GET" style="display:flex;gap:8px;">
             <select name="status" onchange="this.form.submit()" style="width:auto;min-width:130px;padding:9px 14px;font-size:13px;">
                 <option value="">All Statuses</option>
@@ -138,7 +144,6 @@ window.PRODUCT_DATA = <?= json_encode(array_values($products), JSON_HEX_TAG | JS
     </div>
 </div>
 
-<!-- Stats row -->
 <?php
 $stats = $db->query("SELECT
     SUM(status='draft') as draft,
@@ -245,7 +250,6 @@ $stats = $db->query("SELECT
 </div>
 
 <?php if (can('manage_deliveries')): ?>
-<!-- ── Create Delivery Modal ── -->
 <div class="modal-overlay" id="deliveryModal">
     <div class="modal" style="max-width:680px;">
         <div class="modal-header">
@@ -255,7 +259,6 @@ $stats = $db->query("SELECT
         <form method="POST" id="deliveryForm" onsubmit="return validateDeliveryForm()">
             <div class="modal-body">
                 <input type="hidden" name="action" value="create">
-
                 <div class="grid-2" style="margin-bottom:16px;">
                     <div class="form-group" style="margin-bottom:0;">
                         <label>Customer Name</label>
@@ -271,37 +274,7 @@ $stats = $db->query("SELECT
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label>Notes</label>
-                    <textarea name="notes" rows="2" placeholder="Optional delivery notes..."></textarea>
-                </div>
-
-                <div class="items-list-wrap" data-items-wrap>
-                    <div class="items-list-header">
-                        <label>Products to Deliver</label>
-                        <span class="item-count-badge">0 items</span>
-                    </div>
-                    <!-- Column headers -->
-                    <div class="items-col-head">
-                        <span>Product</span>
-                        <span style="text-align:right;padding-right:4px;">Quantity</span>
-                        <span></span>
-                    </div>
-                    <!-- Rows -->
-                    <div class="items-list-body" id="deliveryItems">
-                        <div class="items-empty-row">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;margin-bottom:4px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                            <div>No products added yet</div>
-                        </div>
-                    </div>
-                </div>
-
-                <button type="button" class="add-item-btn" onclick="addItem('deliveryItems')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    Add Product
-                </button>
-
-                <!-- Form error message -->
+                <?php echo buildItemsBlock('deliveryItems', 'Products to Deliver', 'Quantity'); ?>
                 <div id="deliveryFormError" style="display:none;margin-top:12px;background:var(--red-soft);border:1px solid rgba(241,86,106,0.3);border-radius:var(--radius-sm);padding:10px 14px;font-size:13px;color:var(--red);"></div>
             </div>
             <div class="modal-footer">
@@ -317,49 +290,31 @@ $stats = $db->query("SELECT
 <?php endif; ?>
 
 <script>
-// Item count is now handled by updateItemBadge() in app.js
-// Nothing to override here — app.js handles it automatically
-
-// Form validation
 function validateDeliveryForm() {
     const rows = document.querySelectorAll('#deliveryItems .item-row');
     const errEl = document.getElementById('deliveryFormError');
-
     if (rows.length === 0) {
         errEl.style.display = 'block';
         errEl.textContent = 'Please add at least one product before creating a delivery.';
         errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         return false;
     }
-
     let valid = true;
     rows.forEach(row => {
         const sel = row.querySelector('.item-select');
         const qty = row.querySelector('.item-qty');
-        if (!sel || !sel.value) {
-            if (sel) sel.style.borderColor = 'var(--red)';
-            valid = false;
-        } else {
-            if (sel) sel.style.borderColor = '';
-        }
-        if (!qty || !qty.value || parseFloat(qty.value) <= 0) {
-            if (qty) qty.style.borderColor = 'var(--red)';
-            valid = false;
-        } else {
-            if (qty) qty.style.borderColor = '';
-        }
+        if (!sel || !sel.value) { if (sel) sel.style.borderColor = 'var(--red)'; valid = false; }
+        else { if (sel) sel.style.borderColor = ''; }
+        if (!qty || !qty.value || parseFloat(qty.value) <= 0) { if (qty) qty.style.borderColor = 'var(--red)'; valid = false; }
+        else { if (qty) qty.style.borderColor = ''; }
     });
-
     if (!valid) {
         errEl.style.display = 'block';
         errEl.textContent = 'Please select a product and enter a valid quantity for all rows.';
         errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         return false;
     }
-
     errEl.style.display = 'none';
-
-    // Loading state
     const btn = document.getElementById('deliverySubmitBtn');
     if (btn) {
         btn.disabled = true;
@@ -368,28 +323,9 @@ function validateDeliveryForm() {
     return true;
 }
 
-// Reset form when modal closes
-document.getElementById('deliveryModal')?.addEventListener('click', function(e) {
-    if (e.target === this) resetDeliveryForm();
+document.querySelectorAll('[data-confirm]').forEach(el => {
+    el.addEventListener('click', e => { if (!confirm(el.dataset.confirm)) e.preventDefault(); });
 });
-document.querySelector('#deliveryModal .modal-close')?.addEventListener('click', resetDeliveryForm);
-
-function resetDeliveryForm() {
-    const body = document.getElementById('deliveryItems');
-    if (body) {
-        body.innerHTML = '<div class="items-empty-row">No products added yet. Click "+ Add Product" below.</div>';
-    }
-    document.getElementById('deliveryForm')?.reset();
-    document.getElementById('deliveryFormError').style.display = 'none';
-    updateItemCount();
-    // Reset submit button
-    const btn = document.getElementById('deliverySubmitBtn');
-    if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Create Delivery';
-    }
-}
-
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

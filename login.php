@@ -155,7 +155,7 @@ $flash = getFlash();
 
             <?php if ($flash): ?>
             <div class="flash-message flash-<?= $flash['type'] ?>" style="margin:0 0 24px; border-radius:var(--radius-sm);">
-                <?= htmlspecialchars($flash['msg']) ?>
+                <?= $flash['msg'] ?>
             </div>
             <?php endif; ?>
 

@@ -12,16 +12,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'create') {
         denyAction('manage_adjustments', '/pages/adjustments.php');
         $wid  = (int)$_POST['warehouse_id'];
-        $notes = trim($_POST['notes'] ?? '');
+        // BUG FIX: adjustments table has no 'notes' column — removed from INSERT
         $ref  = generateRef('ADJ');
-        $db->prepare("INSERT INTO adjustments (reference, warehouse_id, notes, status, created_by) VALUES (?,?,?,'draft',?)")
-           ->execute([$ref, $wid, $notes, $_SESSION['user_id']]);
+        $db->prepare("INSERT INTO adjustments (reference, warehouse_id, status, created_by) VALUES (?,?,'draft',?)")
+           ->execute([$ref, $wid, $_SESSION['user_id']]);
         $aid = $db->lastInsertId();
         foreach ($_POST['items'] ?? [] as $item) {
             $pid     = (int)($item['product_id'] ?? 0);
             $counted = (float)($item['quantity'] ?? 0);
             if ($pid) {
-                $sysStmt = $db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?");
+                $sysStmt = $db->prepare("SELECT COALESCE(SUM(quantity),0) FROM stock WHERE product_id=? AND warehouse_id=?");
                 $sysStmt->execute([$pid, $wid]);
                 $sys  = (float)$sysStmt->fetchColumn();
                 $diff = $counted - $sys;
@@ -43,6 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $iStmt = $db->prepare("SELECT * FROM adjustment_items WHERE adjustment_id=?");
             $iStmt->execute([$aid]);
             foreach ($iStmt->fetchAll() as $item) {
+                // BUG FIX: Use ON DUPLICATE KEY UPDATE for existing stock rows
                 $db->prepare("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?,?,?) ON DUPLICATE KEY UPDATE quantity=VALUES(quantity)")
                    ->execute([$item['product_id'], $adj['warehouse_id'], $item['counted_quantity']]);
                 $db->prepare("INSERT INTO stock_ledger (product_id,warehouse_id,operation_type,reference_id,reference_type,quantity_change,quantity_after,notes,created_by) VALUES (?,?,'adjustment',?,'adjustment',?,?,'Stock adjustment',?)")
@@ -55,6 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// BUG FIX: adjustments has no 'notes' column — removed from SELECT
 $adjustments = $db->query("SELECT a.*, w.name as warehouse_name, u.name as creator_name FROM adjustments a JOIN warehouses w ON w.id=a.warehouse_id LEFT JOIN users u ON u.id=a.created_by ORDER BY a.created_at DESC")->fetchAll();
 $warehouses  = $db->query("SELECT * FROM warehouses WHERE is_active=1 ORDER BY name")->fetchAll();
 $products    = $db->query("SELECT id,name,sku,unit_of_measure FROM products WHERE is_active=1 ORDER BY name")->fetchAll();
@@ -83,14 +85,13 @@ require_once __DIR__ . '/../includes/header.php';
 <div class="card">
     <div class="table-wrap">
         <table>
-            <thead><tr><th>Reference</th><th>Warehouse</th><th>Status</th><th>Notes</th><th>Created By</th><th>Date</th><?php if (can('manage_adjustments')): ?><th>Actions</th><?php endif; ?></tr></thead>
+            <thead><tr><th>Reference</th><th>Warehouse</th><th>Status</th><th>Created By</th><th>Date</th><?php if (can('manage_adjustments')): ?><th>Actions</th><?php endif; ?></tr></thead>
             <tbody>
             <?php foreach ($adjustments as $a): ?>
             <tr>
                 <td class="td-mono td-bold"><?= clean($a['reference'] ?? '—') ?></td>
                 <td><?= clean($a['warehouse_name']) ?></td>
                 <td><span class="badge <?= statusColor($a['status'] ?? 'draft') ?>"><?= $a['status'] ?></span></td>
-                <td style="color:var(--text2);font-size:13px;"><?= clean($a['notes'] ?? '—') ?></td>
                 <td style="color:var(--text2);font-size:13px;"><?= clean($a['creator_name'] ?? '—') ?></td>
                 <td class="td-mono"><?= date('d M Y', strtotime($a['created_at'])) ?></td>
                 <?php if (can('manage_adjustments')): ?>
@@ -112,7 +113,7 @@ require_once __DIR__ . '/../includes/header.php';
             </tr>
             <?php endforeach; ?>
             <?php if (!$adjustments): ?>
-            <tr><td colspan="<?= can('manage_adjustments') ? 7 : 6 ?>"><div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></div><h3>No adjustments yet</h3></div></td></tr>
+            <tr><td colspan="<?= can('manage_adjustments') ? 6 : 5 ?>"><div class="empty-state"><div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></div><h3>No adjustments yet</h3></div></td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -129,19 +130,13 @@ require_once __DIR__ . '/../includes/header.php';
         <form method="POST" id="adjForm" onsubmit="return validateItemForm('adjItems','adjErr')">
             <div class="modal-body">
                 <input type="hidden" name="action" value="create">
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>Warehouse *</label>
-                        <select name="warehouse_id" required>
-                            <?php foreach ($warehouses as $w): ?>
-                            <option value="<?= $w['id'] ?>"><?= clean($w['name']) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Reason / Notes</label>
-                        <input type="text" name="notes" placeholder="e.g. Monthly count, damaged goods...">
-                    </div>
+                <div class="form-group">
+                    <label>Warehouse *</label>
+                    <select name="warehouse_id" required>
+                        <?php foreach ($warehouses as $w): ?>
+                        <option value="<?= $w['id'] ?>"><?= clean($w['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <?php echo buildItemsBlock('adjItems', 'Products to Adjust', 'Physical Count'); ?>
                 <div class="form-helper" style="margin-top:6px;">Enter the <strong>actual physical count</strong> you found. The system will calculate the difference automatically.</div>
@@ -155,5 +150,11 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 </div>
 <?php endif; ?>
+
+<script>
+document.querySelectorAll('[data-confirm]').forEach(el => {
+    el.addEventListener('click', e => { if (!confirm(el.dataset.confirm)) e.preventDefault(); });
+});
+</script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

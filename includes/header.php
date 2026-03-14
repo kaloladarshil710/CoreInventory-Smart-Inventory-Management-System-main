@@ -36,14 +36,20 @@
 
         <div class="nav-section-label">Operations</div>
 
+        <?php
+        // BUG FIX: Use a dedicated $db variable safe for header scope
+        try { $hdb = getDB(); } catch(Exception $e) { $hdb = null; }
+        ?>
+
         <a href="<?= BASE_URL ?>/pages/receipts.php" class="nav-item <?= ($activePage ?? '') === 'receipts' ? 'active' : '' ?>">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             Receipts
             <?php
             try {
-                $db = getDB();
-                $cnt = $db->query("SELECT COUNT(*) FROM receipts WHERE status IN ('draft','waiting','ready')")->fetchColumn();
-                if ($cnt > 0) echo "<span class=\"nav-badge\">$cnt</span>";
+                if ($hdb) {
+                    $cnt = $hdb->query("SELECT COUNT(*) FROM receipts WHERE status IN ('draft','waiting','ready')")->fetchColumn();
+                    if ($cnt > 0) echo "<span class=\"nav-badge\">$cnt</span>";
+                }
             } catch(Exception $e) {}
             ?>
         </a>
@@ -53,8 +59,10 @@
             Deliveries
             <?php
             try {
-                $cnt2 = $db->query("SELECT COUNT(*) FROM deliveries WHERE status IN ('draft','waiting','ready')")->fetchColumn();
-                if ($cnt2 > 0) echo "<span class=\"nav-badge\">$cnt2</span>";
+                if ($hdb) {
+                    $cnt2 = $hdb->query("SELECT COUNT(*) FROM deliveries WHERE status IN ('draft','waiting','ready')")->fetchColumn();
+                    if ($cnt2 > 0) echo "<span class=\"nav-badge\">$cnt2</span>";
+                }
             } catch(Exception $e) {}
             ?>
         </a>
@@ -89,11 +97,6 @@
         <a href="<?= BASE_URL ?>/pages/users.php" class="nav-item <?= ($activePage ?? '') === 'users' ? 'active' : '' ?>">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             User Management
-            <?php
-            try {
-                $pendingUsers = $db->query("SELECT COUNT(*) FROM users WHERE is_active=1")->fetchColumn();
-            } catch(Exception $e) { $pendingUsers = 0; }
-            ?>
         </a>
         <?php endif; ?>
     </nav>
@@ -125,13 +128,18 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
                 <?php
                 try {
-                    $lowCnt = $db->query("
-                        SELECT COUNT(DISTINCT p.id) FROM products p
-                        LEFT JOIN stock s ON s.product_id=p.id
-                        WHERE p.is_active=1
-                        GROUP BY p.id HAVING COALESCE(SUM(s.quantity),0) <= p.reorder_level
-                    ")->fetchColumn();
-                    if ($lowCnt > 0) echo "<span style='position:absolute;top:4px;right:4px;width:8px;height:8px;background:var(--red);border-radius:50%;border:2px solid var(--bg2);'></span>";
+                    if ($hdb) {
+                        $lowCnt = $hdb->query("
+                            SELECT COUNT(*) FROM (
+                                SELECT p.id FROM products p
+                                LEFT JOIN stock s ON s.product_id=p.id
+                                WHERE p.is_active=1
+                                GROUP BY p.id, p.reorder_level
+                                HAVING COALESCE(SUM(s.quantity),0) <= p.reorder_level
+                            ) AS t
+                        ")->fetchColumn();
+                        if ($lowCnt > 0) echo "<span style='position:absolute;top:4px;right:4px;width:8px;height:8px;background:var(--red);border-radius:50%;border:2px solid var(--bg2);'></span>";
+                    }
                 } catch(Exception $e) {}
                 ?>
             </a>
@@ -143,7 +151,7 @@
     if ($flash):
     ?>
     <div class="flash-message flash-<?= $flash['type'] ?>" id="flashMsg">
-        <span><?= htmlspecialchars($flash['msg']) ?></span>
+        <span><?= $flash['msg'] ?></span>
         <button onclick="this.parentElement.remove()">×</button>
     </div>
     <?php endif; ?>

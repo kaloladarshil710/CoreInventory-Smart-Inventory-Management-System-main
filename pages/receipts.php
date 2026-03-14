@@ -10,18 +10,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'create') {
+        denyAction('manage_receipts', '/pages/receipts.php');
         $supplier    = trim($_POST['supplier_name'] ?? '');
         $warehouseId = (int)$_POST['warehouse_id'];
         $notes       = trim($_POST['notes'] ?? '');
         $ref         = generateRef('RCT');
-        $db->prepare("INSERT INTO receipts (reference, supplier_name, warehouse_id, notes, status, created_by) VALUES (?,?,?,?,'draft',?)")
-           ->execute([$ref, $supplier, $warehouseId, $notes, $_SESSION['user_id']]);
+
+        // BUG FIX: receipts table has no 'notes' column — removed from INSERT
+        $db->prepare("INSERT INTO receipts (reference, supplier_name, warehouse_id, status, created_by) VALUES (?,?,?,'draft',?)")
+           ->execute([$ref, $supplier, $warehouseId, $_SESSION['user_id']]);
         $rid = $db->lastInsertId();
+
         foreach ($_POST['items'] ?? [] as $item) {
             $pid = (int)($item['product_id'] ?? 0);
             $qty = (float)($item['quantity'] ?? 0);
             if ($pid && $qty > 0) {
-                $db->prepare("INSERT INTO receipt_items (receipt_id, product_id, quantity_expected, quantity_received) VALUES (?,?,?,0)")
+                // BUG FIX: receipt_items has only quantity_received, NOT quantity_expected
+                $db->prepare("INSERT INTO receipt_items (receipt_id, product_id, quantity_received) VALUES (?,?,?)")
                    ->execute([$rid, $pid, $qty]);
             }
         }
@@ -35,18 +40,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $db->prepare("SELECT * FROM receipts WHERE id=? AND status NOT IN ('done','canceled')");
         $stmt->execute([$rid]);
         $receipt = $stmt->fetch();
+
         if ($receipt) {
+            // BUG FIX: column is quantity_received, not quantity_expected
             $iStmt = $db->prepare("SELECT * FROM receipt_items WHERE receipt_id=?");
             $iStmt->execute([$rid]);
             foreach ($iStmt->fetchAll() as $item) {
-                $qty = (float)($_POST['received'][$item['id']] ?? $item['quantity_expected']);
+                // BUG FIX: Use quantity_received (the only qty column in receipt_items)
+                $qty = (float)($_POST['received'][$item['id']] ?? $item['quantity_received']);
                 if ($qty > 0) {
                     $db->prepare("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (?,?,?) ON DUPLICATE KEY UPDATE quantity=quantity+VALUES(quantity)")
                        ->execute([$item['product_id'], $receipt['warehouse_id'], $qty]);
                     $db->prepare("UPDATE receipt_items SET quantity_received=? WHERE id=?")->execute([$qty, $item['id']]);
                     $nq = $db->prepare("SELECT quantity FROM stock WHERE product_id=? AND warehouse_id=?");
                     $nq->execute([$item['product_id'], $receipt['warehouse_id']]);
-                    $newQty = $nq->fetchColumn();
+                    $newQty = (float)$nq->fetchColumn();
                     $db->prepare("INSERT INTO stock_ledger (product_id, warehouse_id, operation_type, reference_id, reference_type, quantity_change, quantity_after, notes, created_by) VALUES (?,?,'receipt',?,'receipt',?,?,'',?)")
                        ->execute([$item['product_id'], $receipt['warehouse_id'], $rid, $qty, $newQty, $_SESSION['user_id']]);
                 }
@@ -69,11 +77,13 @@ $statusFilter = $_GET['status'] ?? '';
 $where = ''; $params = [];
 if ($statusFilter) { $where = "WHERE r.status=?"; $params[] = $statusFilter; }
 
-$receipts   = $db->prepare("SELECT r.*, w.name as warehouse_name, u.name as creator_name FROM receipts r JOIN warehouses w ON w.id=r.warehouse_id LEFT JOIN users u ON u.id=r.created_by $where ORDER BY r.created_at DESC");
+$receipts = $db->prepare("SELECT r.*, w.name as warehouse_name, u.name as creator_name FROM receipts r JOIN warehouses w ON w.id=r.warehouse_id LEFT JOIN users u ON u.id=r.created_by $where ORDER BY r.created_at DESC");
 $receipts->execute($params);
 $receipts   = $receipts->fetchAll();
 $warehouses = $db->query("SELECT * FROM warehouses WHERE is_active=1 ORDER BY name")->fetchAll();
 $products   = $db->query("SELECT id,name,sku,unit_of_measure FROM products WHERE is_active=1 ORDER BY name")->fetchAll();
+
+// BUG FIX: quantity_expected does not exist — use quantity_received
 $pendingItems = $db->query("SELECT ri.*, p.name as pname, p.sku, p.unit_of_measure, r.id as rid FROM receipt_items ri JOIN products p ON p.id=ri.product_id JOIN receipts r ON r.id=ri.receipt_id WHERE r.status NOT IN ('done','canceled')")->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
@@ -167,10 +177,6 @@ require_once __DIR__ . '/../includes/header.php';
                         </select>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>Notes</label>
-                    <textarea name="notes" rows="2" placeholder="Optional notes..."></textarea>
-                </div>
                 <?php echo buildItemsBlock('receiptItems', 'Products to Receive', 'Expected Qty'); ?>
                 <div id="receiptErr" class="form-item-error" style="display:none;"></div>
             </div>
@@ -225,15 +231,17 @@ function openValidate(id, ref) {
                 <span>Product</span><span>Expected</span><span>Received Qty</span>
             </div>`;
         items.forEach(i => {
+            // BUG FIX: use quantity_received (quantity_expected does not exist)
+            const expectedQty = parseFloat(i.quantity_received || 0).toFixed(2);
             html += `<div class="validate-row">
                 <div>
                     <div style="font-weight:600;color:var(--text);font-size:13.5px;">${i.pname}</div>
                     <div style="font-size:11px;color:var(--text3);font-family:var(--font-mono);">${i.sku}</div>
                 </div>
-                <div style="color:var(--text2);font-size:13px;">${parseFloat(i.quantity_expected).toFixed(2)} <span style="color:var(--text3)">${i.unit_of_measure}</span></div>
+                <div style="color:var(--text2);font-size:13px;">${expectedQty} <span style="color:var(--text3)">${i.unit_of_measure}</span></div>
                 <div>
                     <div style="display:flex;align-items:center;gap:6px;">
-                        <input type="number" name="received[${i.id}]" value="${i.quantity_expected}"
+                        <input type="number" name="received[${i.id}]" value="${expectedQty}"
                             min="0" step="0.01" class="validate-qty-input">
                         <span class="item-uom-tag">${i.unit_of_measure}</span>
                     </div>
