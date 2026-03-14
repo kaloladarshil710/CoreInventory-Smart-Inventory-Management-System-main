@@ -1,22 +1,55 @@
-// CoreInventory - App JS
+// CoreInventory — App JS v2
 
-// Modal helpers
+// ---- Sidebar ----
+let sidebarCollapsed = false;
+
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const wrapper = document.getElementById('mainWrapper');
+    sidebarCollapsed = !sidebarCollapsed;
+    sidebar.classList.toggle('collapsed', sidebarCollapsed);
+    if (wrapper) wrapper.style.marginLeft = sidebarCollapsed ? '0' : '260px';
+}
+
+// Mobile: swipe to close sidebar
+if (window.innerWidth <= 768) {
+    document.getElementById('mainWrapper')?.addEventListener('click', () => {
+        document.getElementById('sidebar')?.classList.remove('open');
+    });
+}
+
+// ---- Modal helpers ----
 function openModal(id) {
     document.getElementById(id)?.classList.add('open');
+    document.body.style.overflow = 'hidden';
 }
 
 function closeModal(id) {
     document.getElementById(id)?.classList.remove('open');
+    document.body.style.overflow = '';
 }
 
 // Close modal on overlay click
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
     overlay.addEventListener('click', function(e) {
-        if (e.target === this) this.classList.remove('open');
+        if (e.target === this) {
+            this.classList.remove('open');
+            document.body.style.overflow = '';
+        }
     });
 });
 
-// Dynamic line items for receipts/deliveries/adjustments
+// Close modal on Escape key
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-overlay.open').forEach(m => {
+            m.classList.remove('open');
+            document.body.style.overflow = '';
+        });
+    }
+});
+
+// ---- Dynamic line items ----
 let itemCount = 0;
 
 function addItem(tableId, productOptions) {
@@ -27,46 +60,59 @@ function addItem(tableId, productOptions) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
         <td>
-            <select name="items[${itemCount}][product_id]" required style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 10px;font-size:13px;">
-                <option value="">Select product...</option>
+            <select name="items[${itemCount}][product_id]" required class="item-input" style="width:100%;min-width:180px;">
+                <option value="">— Select product —</option>
                 ${productOptions}
             </select>
         </td>
         <td>
-            <input type="number" name="items[${itemCount}][quantity]" min="0.01" step="0.01" placeholder="0.00"
-                style="width:100px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 10px;font-size:13px;" required>
+            <input type="number" name="items[${itemCount}][quantity]"
+                min="0.01" step="0.01" placeholder="0.00"
+                class="item-input" style="width:110px;" required>
         </td>
         <td>
-            <button type="button" onclick="this.closest('tr').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:18px;padding:2px 8px;">×</button>
+            <button type="button" class="item-delete" onclick="this.closest('tr').remove()" title="Remove">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
         </td>
     `;
     tbody.appendChild(tr);
+
+    // Focus the select
+    tr.querySelector('select').focus();
 }
 
-// Search/filter tables
+// ---- Confirm dangerous actions ----
+document.addEventListener('click', function(e) {
+    const el = e.target.closest('[data-confirm]');
+    if (el && !confirm(el.dataset.confirm)) e.preventDefault();
+});
+
+// ---- Auto-dismiss flash messages ----
+const flash = document.getElementById('flashMsg');
+if (flash) {
+    setTimeout(() => {
+        flash.style.transition = 'opacity 0.4s';
+        flash.style.opacity = '0';
+        setTimeout(() => flash.remove(), 400);
+    }, 4500);
+}
+
+// ---- Table search filter ----
 function filterTable(inputId, tableId) {
     const input = document.getElementById(inputId);
     const table = document.getElementById(tableId);
     if (!input || !table) return;
 
-    input.addEventListener('keyup', function() {
-        const filter = this.value.toLowerCase();
+    input.addEventListener('keyup', function () {
+        const q = this.value.toLowerCase();
         table.querySelectorAll('tbody tr').forEach(row => {
-            row.style.display = row.textContent.toLowerCase().includes(filter) ? '' : 'none';
+            row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
         });
     });
 }
 
-// Auto-dismiss flash messages
-setTimeout(() => {
-    const flash = document.getElementById('flash');
-    if (flash) flash.style.opacity = '0';
-    setTimeout(() => flash?.remove(), 300);
-}, 4000);
-
-// Confirm dangerous actions
-document.querySelectorAll('[data-confirm]').forEach(el => {
-    el.addEventListener('click', function(e) {
-        if (!confirm(this.dataset.confirm)) e.preventDefault();
-    });
-});
+// ---- Number formatting ----
+function formatNum(n, dec = 0) {
+    return parseFloat(n).toLocaleString('en-IN', { minimumFractionDigits: dec });
+}

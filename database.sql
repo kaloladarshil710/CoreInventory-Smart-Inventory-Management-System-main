@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE users
+  MODIFY COLUMN role ENUM('admin','manager','staff') DEFAULT 'staff';
+
 -- Warehouses Table
 CREATE TABLE IF NOT EXISTS warehouses (
     id INT AUTO_INCREMENT PRIMARY KEY,
