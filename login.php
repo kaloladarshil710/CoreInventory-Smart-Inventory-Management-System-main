@@ -18,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
-        if ($user && password_verify($password, $user['password'])) {
+        if ($user && password_verify($password, $user['password']) && ($user['is_active'] ?? 1)) {
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user']    = [
                 'id'    => $user['id'],
@@ -29,7 +29,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: ' . BASE_URL . '/pages/dashboard.php');
             exit;
         } else {
+            if ($user && password_verify($password, $user['password']) && !$user['is_active']) {
+            $error = 'Your account has been deactivated. Contact your Admin.';
+        } else {
             $error = 'Invalid email or password. Please try again.';
+        }
         }
     } else {
         $error = 'Please enter both email and password.';

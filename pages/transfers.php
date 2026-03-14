@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/config.php';
-requireLogin();
+requirePermission('view_transfers');
 
 $db = getDB();
 $pageTitle  = 'Internal Transfers';
@@ -39,6 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
+        if (!can('validate_transfers')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/transfers.php'); exit; }
         $tid = (int)$_POST['transfer_id'];
         $stmt = $db->prepare("SELECT * FROM transfers WHERE id=? AND status NOT IN ('done','canceled')");
         $stmt->execute([$tid]);

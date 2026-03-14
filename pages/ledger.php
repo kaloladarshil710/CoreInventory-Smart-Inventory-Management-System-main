@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/config.php';
-requireLogin();
+requirePermission('view_ledger');
 
 $db = getDB();
 $pageTitle  = 'Move History';

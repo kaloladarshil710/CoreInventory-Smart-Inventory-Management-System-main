@@ -74,12 +74,28 @@
             Move History
         </a>
 
+        <?php if (can('view_warehouses') || can('view_users')): ?>
         <div class="nav-section-label">Configuration</div>
+        <?php endif; ?>
 
+        <?php if (can('view_warehouses')): ?>
         <a href="<?= BASE_URL ?>/pages/warehouses.php" class="nav-item <?= ($activePage ?? '') === 'warehouses' ? 'active' : '' ?>">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             Warehouses
         </a>
+        <?php endif; ?>
+
+        <?php if (can('view_users')): ?>
+        <a href="<?= BASE_URL ?>/pages/users.php" class="nav-item <?= ($activePage ?? '') === 'users' ? 'active' : '' ?>">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            User Management
+            <?php
+            try {
+                $pendingUsers = $db->query("SELECT COUNT(*) FROM users WHERE is_active=1")->fetchColumn();
+            } catch(Exception $e) { $pendingUsers = 0; }
+            ?>
+        </a>
+        <?php endif; ?>
     </nav>
 
     <div class="sidebar-footer">

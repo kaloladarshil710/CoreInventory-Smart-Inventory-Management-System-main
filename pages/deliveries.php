@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/config.php';
-requireLogin();
+requirePermission('view_deliveries');
 
 $db = getDB();
 $pageTitle  = 'Deliveries';
@@ -33,6 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
+        if (!can('validate_deliveries')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/deliveries.php'); exit; }
         $did = (int)$_POST['delivery_id'];
         $stmt = $db->prepare("SELECT * FROM deliveries WHERE id=? AND status NOT IN ('done','canceled')");
         $stmt->execute([$did]);

@@ -1,10 +1,15 @@
 <?php
 require_once __DIR__ . '/includes/config.php';
 
+// Signup is disabled — accounts are created by Admin/Manager only
 if (isLoggedIn()) {
     header('Location: ' . BASE_URL . '/pages/dashboard.php');
-    exit;
+} else {
+    setFlash('warning', 'Account registration is by invitation only. Please contact your Administrator.');
+    header('Location: ' . BASE_URL . '/login.php');
 }
+exit;
+
 
 $errors = [];
 $success = false;

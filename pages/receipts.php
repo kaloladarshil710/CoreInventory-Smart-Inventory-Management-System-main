@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/../includes/config.php';
-requireLogin();
+requirePermission('view_receipts');
 
 $db = getDB();
 $pageTitle  = 'Receipts';
@@ -35,6 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
+        if (!can('validate_receipts')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/receipts.php'); exit; }
         $rid = (int)$_POST['receipt_id'];
         $receipt = $db->prepare("SELECT * FROM receipts WHERE id=? AND status != 'done'")->execute([$rid]) && ($r = $db->prepare("SELECT * FROM receipts WHERE id=?")->execute([$rid]));
         $stmt = $db->prepare("SELECT * FROM receipts WHERE id=? AND status NOT IN ('done','canceled')");
