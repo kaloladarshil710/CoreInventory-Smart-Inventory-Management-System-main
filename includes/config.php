@@ -204,3 +204,6 @@ function roleBadge(string $role): string {
         default   => 'badge-draft',
     };
 }
+
+// Load shared UI helpers
+require_once __DIR__ . '/functions.php';

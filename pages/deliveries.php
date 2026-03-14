@@ -10,6 +10,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'create') {
+        denyAction('manage_deliveries', '/pages/deliveries.php');
         $customer    = trim($_POST['customer_name'] ?? '');
         $warehouseId = (int)$_POST['warehouse_id'];
         $notes       = trim($_POST['notes'] ?? '');
@@ -27,14 +28,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    ->execute([$did, $pid, $qty]);
             }
         }
-        setFlash('success', "Delivery order {$ref} created.");
-        header('Location: ' . BASE_URL . '/pages/deliveries.php');
-        exit;
+        setFlash('success', "Delivery order <strong>{$ref}</strong> created successfully.");
+        header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
     }
 
     if ($action === 'validate') {
         denyAction('validate_deliveries', '/pages/deliveries.php');
-        if (!can('validate_deliveries')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/deliveries.php'); exit; }
         $did = (int)$_POST['delivery_id'];
         $stmt = $db->prepare("SELECT * FROM deliveries WHERE id=? AND status NOT IN ('done','canceled')");
         $stmt->execute([$did]);
@@ -43,115 +42,226 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($delivery) {
             $items = $db->prepare("SELECT * FROM delivery_items WHERE delivery_id=?");
             $items->execute([$did]);
-            foreach ($items->fetchAll() as $item) {
-                // Check available stock
-                $avail = $db->prepare("SELECT quantity FROM stock WHERE product_id=? AND warehouse_id=?");
+            $allItems = $items->fetchAll();
+
+            // First pass — check all stock
+            foreach ($allItems as $item) {
+                $avail = $db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?");
                 $avail->execute([$item['product_id'], $delivery['warehouse_id']]);
-                $avail = (float)($avail->fetchColumn() ?? 0);
-
+                $avail = (float)$avail->fetchColumn();
                 if ($avail < $item['quantity']) {
-                    setFlash('error', "Insufficient stock for one or more products.");
-                    header('Location: ' . BASE_URL . '/pages/deliveries.php');
-                    exit;
+                    $pName = $db->prepare("SELECT name FROM products WHERE id=?");
+                    $pName->execute([$item['product_id']]);
+                    $pName = $pName->fetchColumn();
+                    setFlash('error', "Insufficient stock for <strong>{$pName}</strong>. Available: {$avail}, Required: {$item['quantity']}");
+                    header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
                 }
+            }
 
-                // Deduct stock
+            // Second pass — deduct stock
+            foreach ($allItems as $item) {
                 $db->prepare("UPDATE stock SET quantity=quantity-? WHERE product_id=? AND warehouse_id=?")
                    ->execute([$item['quantity'], $item['product_id'], $delivery['warehouse_id']]);
-
-                $newQty = $db->prepare("SELECT quantity FROM stock WHERE product_id=? AND warehouse_id=?");
-                $newQty->execute([$item['product_id'], $delivery['warehouse_id']]);
-                $newQty = $newQty->fetchColumn();
+                $newQty = (float)$db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?")->execute([$item['product_id'], $delivery['warehouse_id']]) ?: 0;
+                $nq = $db->prepare("SELECT COALESCE(quantity,0) FROM stock WHERE product_id=? AND warehouse_id=?");
+                $nq->execute([$item['product_id'], $delivery['warehouse_id']]);
+                $newQty = (float)$nq->fetchColumn();
 
                 $db->prepare("INSERT INTO stock_ledger (product_id, warehouse_id, operation_type, reference_id, reference_type, quantity_change, quantity_after, created_by) VALUES (?,?,'delivery',?,'delivery',?,?,?)")
                    ->execute([$item['product_id'], $delivery['warehouse_id'], $did, -$item['quantity'], $newQty, $_SESSION['user_id']]);
             }
             $db->prepare("UPDATE deliveries SET status='done', validated_at=NOW() WHERE id=?")->execute([$did]);
-            setFlash('success', 'Delivery validated. Stock deducted.');
+            setFlash('success', 'Delivery validated. Stock deducted successfully.');
         }
-        header('Location: ' . BASE_URL . '/pages/deliveries.php');
-        exit;
+        header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
     }
 
     if ($action === 'cancel') {
         denyAction('validate_deliveries', '/pages/deliveries.php');
         $db->prepare("UPDATE deliveries SET status='canceled' WHERE id=? AND status='draft'")->execute([(int)$_POST['delivery_id']]);
-        setFlash('success', 'Delivery canceled.');
-        header('Location: ' . BASE_URL . '/pages/deliveries.php');
-        exit;
+        setFlash('success', 'Delivery order canceled.');
+        header('Location: ' . BASE_URL . '/pages/deliveries.php'); exit;
     }
 }
 
-$deliveries = $db->query("SELECT d.*, w.name as warehouse_name FROM deliveries d JOIN warehouses w ON w.id=d.warehouse_id ORDER BY d.created_at DESC")->fetchAll();
-$warehouses = $db->query("SELECT * FROM warehouses WHERE is_active=1")->fetchAll();
-$products   = $db->query("SELECT * FROM products WHERE is_active=1 ORDER BY name")->fetchAll();
-$productOpts = '';
-foreach ($products as $p) $productOpts .= "<option value=\"{$p['id']}\">[{$p['sku']}] {$p['name']}</option>";
+$statusFilter = $_GET['status'] ?? '';
+$where  = '';
+$params = [];
+if ($statusFilter) { $where = "WHERE d.status=?"; $params[] = $statusFilter; }
+
+$deliveries = $db->prepare("
+    SELECT d.*, w.name as warehouse_name, u.name as creator_name
+    FROM deliveries d
+    JOIN warehouses w ON w.id=d.warehouse_id
+    LEFT JOIN users u ON u.id=d.created_by
+    $where
+    ORDER BY d.created_at DESC
+");
+$deliveries->execute($params);
+$deliveries = $deliveries->fetchAll();
+
+$warehouses = $db->query("SELECT * FROM warehouses WHERE is_active=1 ORDER BY name")->fetchAll();
+$products   = $db->query("SELECT id, name, sku, unit_of_measure FROM products WHERE is_active=1 ORDER BY name")->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
 ?>
 
+<!-- Pass product data to JS safely -->
+<script>
+window.PRODUCT_DATA = <?= json_encode(array_values($products), JSON_HEX_TAG | JSON_HEX_QUOT) ?>;
+</script>
+
 <div class="page-header">
-    <div><h1>Delivery Orders</h1><p>Manage outgoing stock to customers</p></div>
-    <button class="btn btn-primary" onclick="openModal('deliveryModal')">+ New Delivery</button>
+    <div>
+        <h1>Delivery Orders</h1>
+        <p>Manage outgoing stock to customers</p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+        <!-- Status filter -->
+        <form method="GET" style="display:flex;gap:8px;">
+            <select name="status" onchange="this.form.submit()" style="width:auto;min-width:130px;padding:9px 14px;font-size:13px;">
+                <option value="">All Statuses</option>
+                <?php foreach (['draft','waiting','ready','done','canceled'] as $s): ?>
+                <option value="<?= $s ?>" <?= $statusFilter === $s ? 'selected' : '' ?>><?= ucfirst($s) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <?php if ($statusFilter): ?>
+            <a href="<?= BASE_URL ?>/pages/deliveries.php" class="btn btn-ghost btn-sm">Clear</a>
+            <?php endif; ?>
+        </form>
+        <?php if (can('manage_deliveries')): ?>
+        <button class="btn btn-primary" onclick="openModal('deliveryModal')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Delivery
+        </button>
+        <?php endif; ?>
+    </div>
+</div>
+
+<!-- Stats row -->
+<?php
+$stats = $db->query("SELECT
+    SUM(status='draft') as draft,
+    SUM(status='waiting') as waiting,
+    SUM(status='ready') as ready,
+    SUM(status='done') as done,
+    SUM(status='canceled') as canceled
+    FROM deliveries")->fetch();
+?>
+<div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
+    <?php
+    $statItems = [
+        ['Draft',    $stats['draft']    ?? 0, 'var(--text3)'],
+        ['Waiting',  $stats['waiting']  ?? 0, 'var(--orange)'],
+        ['Ready',    $stats['ready']    ?? 0, 'var(--accent)'],
+        ['Done',     $stats['done']     ?? 0, 'var(--green)'],
+        ['Canceled', $stats['canceled'] ?? 0, 'var(--red)'],
+    ];
+    foreach ($statItems as [$lbl, $val, $clr]): ?>
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 18px;display:flex;align-items:center;gap:10px;">
+        <span style="font-family:var(--font-head);font-size:22px;font-weight:800;color:<?= $clr ?>"><?= $val ?></span>
+        <span style="font-size:12px;color:var(--text3);"><?= $lbl ?></span>
+    </div>
+    <?php endforeach; ?>
 </div>
 
 <div class="card">
+    <div class="card-header">
+        <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="17" height="17"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+            Delivery Orders (<?= count($deliveries) ?>)
+        </span>
+    </div>
     <div class="table-wrap">
         <table>
-            <thead><tr><th>Reference</th><th>Customer</th><th>Warehouse</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Reference</th>
+                    <th>Customer</th>
+                    <th>Warehouse</th>
+                    <th>Status</th>
+                    <th>Created By</th>
+                    <th>Date</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
             <tbody>
             <?php foreach ($deliveries as $d): ?>
             <tr>
                 <td class="td-mono td-bold"><?= clean($d['reference']) ?></td>
                 <td><?= clean($d['customer_name'] ?? '—') ?></td>
-                <td><?= clean($d['warehouse_name']) ?></td>
-                <td><span class="badge <?= statusColor($d['status']) ?>"><?= $d['status'] ?></span></td>
-                <td class="td-mono"><?= date('d M Y', strtotime($d['created_at'])) ?></td>
                 <td>
+                    <span style="display:flex;align-items:center;gap:6px;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                        <?= clean($d['warehouse_name']) ?>
+                    </span>
+                </td>
+                <td><span class="badge <?= statusColor($d['status'] ?? 'draft') ?>"><?= $d['status'] ?></span></td>
+                <td style="color:var(--text2);font-size:13px;"><?= clean($d['creator_name'] ?? '—') ?></td>
+                <td class="td-mono"><?= date('d M Y', strtotime($d['created_at'])) ?></td>
+                <td class="td-actions">
                     <?php if (in_array($d['status'], ['draft','waiting','ready'])): ?>
-                    <?php if (can('validate_deliveries')): ?>
-                    <form method="POST" style="display:inline">
-                        <input type="hidden" name="action" value="validate">
-                        <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
-                        <button type="submit" class="btn btn-success btn-sm" data-confirm="Validate delivery and deduct stock?">✓ Validate</button>
-                    </form>
-                    <form method="POST" style="display:inline">
-                        <input type="hidden" name="action" value="cancel">
-                        <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
-                        <button type="submit" class="btn btn-danger btn-sm" data-confirm="Cancel this delivery?">Cancel</button>
-                    </form>
-                    <?php endif; ?>
+                        <?php if (can('validate_deliveries')): ?>
+                        <form method="POST" style="display:inline-block;margin-right:4px;">
+                            <input type="hidden" name="action" value="validate">
+                            <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
+                            <button type="submit" class="btn btn-success btn-sm"
+                                data-confirm="Validate delivery and deduct stock?">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                                Validate
+                            </button>
+                        </form>
+                        <form method="POST" style="display:inline-block;">
+                            <input type="hidden" name="action" value="cancel">
+                            <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
+                            <button type="submit" class="btn btn-ghost btn-sm"
+                                data-confirm="Cancel this delivery?">Cancel</button>
+                        </form>
+                        <?php else: ?>
+                        <span style="color:var(--text3);font-size:12px;font-style:italic;">Awaiting validation</span>
+                        <?php endif; ?>
                     <?php else: ?>
-                    <span style="color:var(--text3);font-size:12px;"><?= $d['status'] === 'done' ? '✓ Dispatched' : 'Canceled' ?></span>
+                        <span style="color:<?= $d['status'] === 'done' ? 'var(--green)' : 'var(--text3)' ?>;font-size:12px;">
+                            <?= $d['status'] === 'done' ? '✓ Dispatched' : 'Canceled' ?>
+                        </span>
                     <?php endif; ?>
                 </td>
             </tr>
             <?php endforeach; ?>
             <?php if (!$deliveries): ?>
-            <tr><td colspan="6"><div class="empty-state"><h3>No delivery orders</h3><p>Create a delivery when dispatching goods to a customer</p></div></td></tr>
+            <tr><td colspan="7">
+                <div class="empty-state">
+                    <div class="empty-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+                    </div>
+                    <h3>No delivery orders</h3>
+                    <p>Create a delivery when dispatching goods to a customer</p>
+                </div>
+            </td></tr>
             <?php endif; ?>
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- Create Delivery Modal -->
+<?php if (can('manage_deliveries')): ?>
+<!-- ── Create Delivery Modal ── -->
 <div class="modal-overlay" id="deliveryModal">
-    <div class="modal" style="max-width:680px">
+    <div class="modal" style="max-width:680px;">
         <div class="modal-header">
             <h3>New Delivery Order</h3>
             <button class="modal-close" onclick="closeModal('deliveryModal')">×</button>
         </div>
-        <form method="POST">
+        <form method="POST" id="deliveryForm" onsubmit="return validateDeliveryForm()">
             <div class="modal-body">
                 <input type="hidden" name="action" value="create">
-                <div class="grid-2">
-                    <div class="form-group">
+
+                <div class="grid-2" style="margin-bottom:16px;">
+                    <div class="form-group" style="margin-bottom:0;">
                         <label>Customer Name</label>
-                        <input type="text" name="customer_name">
+                        <input type="text" name="customer_name" placeholder="e.g. ABC Company">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" style="margin-bottom:0;">
                         <label>From Warehouse *</label>
                         <select name="warehouse_id" required>
                             <?php foreach ($warehouses as $w): ?>
@@ -160,26 +270,126 @@ require_once __DIR__ . '/../includes/header.php';
                         </select>
                     </div>
                 </div>
-                <div class="form-group"><label>Notes</label><textarea name="notes" rows="2"></textarea></div>
-                <label style="margin-bottom:10px;display:block;">Products to Deliver</label>
-                <div class="items-table-wrap" style="margin-bottom:12px;">
-                    <table><thead><tr><th>Product</th><th>Quantity</th><th></th></tr></thead>
-                    <tbody id="deliveryItems"></tbody></table>
+
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea name="notes" rows="2" placeholder="Optional delivery notes..."></textarea>
                 </div>
-                <button type="button" class="btn btn-ghost btn-sm" onclick="addItem('deliveryItems', `<?= addslashes($productOpts) ?>`)">+ Add Product</button>
+
+                <div class="items-list-wrap" data-items-wrap>
+                    <div class="items-list-header">
+                        <label>Products to Deliver</label>
+                        <span class="item-count-badge">0 items</span>
+                    </div>
+                    <!-- Column headers -->
+                    <div class="items-col-head">
+                        <span>Product</span>
+                        <span style="text-align:right;padding-right:4px;">Quantity</span>
+                        <span></span>
+                    </div>
+                    <!-- Rows -->
+                    <div class="items-list-body" id="deliveryItems">
+                        <div class="items-empty-row">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3;margin-bottom:4px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                            <div>No products added yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="button" class="add-item-btn" onclick="addItem('deliveryItems')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Product
+                </button>
+
+                <!-- Form error message -->
+                <div id="deliveryFormError" style="display:none;margin-top:12px;background:var(--red-soft);border:1px solid rgba(241,86,106,0.3);border-radius:var(--radius-sm);padding:10px 14px;font-size:13px;color:var(--red);"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-ghost" onclick="closeModal('deliveryModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary">Create Delivery</button>
+                <button type="submit" class="btn btn-primary" id="deliverySubmitBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    Create Delivery
+                </button>
             </div>
         </form>
     </div>
 </div>
+<?php endif; ?>
 
 <script>
-document.querySelectorAll('[data-confirm]').forEach(el => {
-    el.addEventListener('click', e => { if (!confirm(el.dataset.confirm)) e.preventDefault(); });
+// Item count is now handled by updateItemBadge() in app.js
+// Nothing to override here — app.js handles it automatically
+
+// Form validation
+function validateDeliveryForm() {
+    const rows = document.querySelectorAll('#deliveryItems .item-row');
+    const errEl = document.getElementById('deliveryFormError');
+
+    if (rows.length === 0) {
+        errEl.style.display = 'block';
+        errEl.textContent = 'Please add at least one product before creating a delivery.';
+        errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return false;
+    }
+
+    let valid = true;
+    rows.forEach(row => {
+        const sel = row.querySelector('.item-select');
+        const qty = row.querySelector('.item-qty');
+        if (!sel || !sel.value) {
+            if (sel) sel.style.borderColor = 'var(--red)';
+            valid = false;
+        } else {
+            if (sel) sel.style.borderColor = '';
+        }
+        if (!qty || !qty.value || parseFloat(qty.value) <= 0) {
+            if (qty) qty.style.borderColor = 'var(--red)';
+            valid = false;
+        } else {
+            if (qty) qty.style.borderColor = '';
+        }
+    });
+
+    if (!valid) {
+        errEl.style.display = 'block';
+        errEl.textContent = 'Please select a product and enter a valid quantity for all rows.';
+        errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return false;
+    }
+
+    errEl.style.display = 'none';
+
+    // Loading state
+    const btn = document.getElementById('deliverySubmitBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite;margin-right:6px;"></span>Creating...';
+    }
+    return true;
+}
+
+// Reset form when modal closes
+document.getElementById('deliveryModal')?.addEventListener('click', function(e) {
+    if (e.target === this) resetDeliveryForm();
 });
+document.querySelector('#deliveryModal .modal-close')?.addEventListener('click', resetDeliveryForm);
+
+function resetDeliveryForm() {
+    const body = document.getElementById('deliveryItems');
+    if (body) {
+        body.innerHTML = '<div class="items-empty-row">No products added yet. Click "+ Add Product" below.</div>';
+    }
+    document.getElementById('deliveryForm')?.reset();
+    document.getElementById('deliveryFormError').style.display = 'none';
+    updateItemCount();
+    // Reset submit button
+    const btn = document.getElementById('deliverySubmitBtn');
+    if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Create Delivery';
+    }
+}
+
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>
