@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS products (
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 );
 
+
+-- ALTER TABLE products ADD COLUMN reorder_level INT DEFAULT 0;
+
+
 -- Stock per warehouse/location
 CREATE TABLE IF NOT EXISTS stock (
     id INT AUTO_INCREMENT PRIMARY KEY,
