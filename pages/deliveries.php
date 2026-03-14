@@ -33,6 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
+        denyAction('validate_deliveries', '/pages/deliveries.php');
         if (!can('validate_deliveries')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/deliveries.php'); exit; }
         $did = (int)$_POST['delivery_id'];
         $stmt = $db->prepare("SELECT * FROM deliveries WHERE id=? AND status NOT IN ('done','canceled')");
@@ -73,6 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'cancel') {
+        denyAction('validate_deliveries', '/pages/deliveries.php');
         $db->prepare("UPDATE deliveries SET status='canceled' WHERE id=? AND status='draft'")->execute([(int)$_POST['delivery_id']]);
         setFlash('success', 'Delivery canceled.');
         header('Location: ' . BASE_URL . '/pages/deliveries.php');
@@ -108,6 +110,7 @@ require_once __DIR__ . '/../includes/header.php';
                 <td class="td-mono"><?= date('d M Y', strtotime($d['created_at'])) ?></td>
                 <td>
                     <?php if (in_array($d['status'], ['draft','waiting','ready'])): ?>
+                    <?php if (can('validate_deliveries')): ?>
                     <form method="POST" style="display:inline">
                         <input type="hidden" name="action" value="validate">
                         <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
@@ -118,6 +121,7 @@ require_once __DIR__ . '/../includes/header.php';
                         <input type="hidden" name="delivery_id" value="<?= $d['id'] ?>">
                         <button type="submit" class="btn btn-danger btn-sm" data-confirm="Cancel this delivery?">Cancel</button>
                     </form>
+                    <?php endif; ?>
                     <?php else: ?>
                     <span style="color:var(--text3);font-size:12px;"><?= $d['status'] === 'done' ? '✓ Dispatched' : 'Canceled' ?></span>
                     <?php endif; ?>

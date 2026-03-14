@@ -35,7 +35,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
-        if (!can('validate_receipts')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/receipts.php'); exit; }
+        denyAction('validate_receipts', '/pages/receipts.php');
+        // Already patched { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/receipts.php'); exit; }
         $rid = (int)$_POST['receipt_id'];
         $receipt = $db->prepare("SELECT * FROM receipts WHERE id=? AND status != 'done'")->execute([$rid]) && ($r = $db->prepare("SELECT * FROM receipts WHERE id=?")->execute([$rid]));
         $stmt = $db->prepare("SELECT * FROM receipts WHERE id=? AND status NOT IN ('done','canceled')");
@@ -76,6 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'cancel') {
+        denyAction('validate_receipts', '/pages/receipts.php');
         $db->prepare("UPDATE receipts SET status='canceled' WHERE id=? AND status='draft'")->execute([(int)$_POST['receipt_id']]);
         setFlash('success', 'Receipt canceled.');
         header('Location: ' . BASE_URL . '/pages/receipts.php');
@@ -139,12 +141,14 @@ require_once __DIR__ . '/../includes/header.php';
                 <td class="td-mono"><?= date('d M Y', strtotime($r['created_at'])) ?></td>
                 <td>
                     <?php if (in_array($r['status'], ['draft','waiting','ready'])): ?>
+                    <?php if (can('validate_receipts')): ?>
                     <button class="btn btn-success btn-sm" onclick="openValidate(<?= $r['id'] ?>, '<?= clean($r['reference']) ?>')">✓ Validate</button>
                     <form method="POST" style="display:inline">
                         <input type="hidden" name="action" value="cancel">
                         <input type="hidden" name="receipt_id" value="<?= $r['id'] ?>">
                         <button type="submit" class="btn btn-danger btn-sm" data-confirm="Cancel this receipt?">Cancel</button>
                     </form>
+                    <?php endif; ?>
                     <?php else: ?>
                     <span style="color:var(--text3);font-size:12px;"><?= $r['validated_at'] ? date('d M Y', strtotime($r['validated_at'])) : '—' ?></span>
                     <?php endif; ?>

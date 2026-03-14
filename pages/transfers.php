@@ -39,6 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'validate') {
+        denyAction('validate_transfers', '/pages/transfers.php');
         if (!can('validate_transfers')) { setFlash('error','Access denied.'); header('Location: '.BASE_URL.'/pages/transfers.php'); exit; }
         $tid = (int)$_POST['transfer_id'];
         $stmt = $db->prepare("SELECT * FROM transfers WHERE id=? AND status NOT IN ('done','canceled')");
@@ -112,11 +113,13 @@ require_once __DIR__ . '/../includes/header.php';
                 <td class="td-mono"><?= date('d M Y', strtotime($t['created_at'])) ?></td>
                 <td>
                     <?php if (in_array($t['status'], ['draft','waiting','ready'])): ?>
+                    <?php if (can('validate_transfers')): ?>
                     <form method="POST" style="display:inline">
                         <input type="hidden" name="action" value="validate">
                         <input type="hidden" name="transfer_id" value="<?= $t['id'] ?>">
                         <button type="submit" class="btn btn-success btn-sm" data-confirm="Execute this transfer?">✓ Execute</button>
                     </form>
+                    <?php endif; ?>
                     <?php else: ?>
                     <span style="color:var(--text3);font-size:12px;">Completed</span>
                     <?php endif; ?>

@@ -1,6 +1,6 @@
 <?php
 // ===========================================
-// CoreInventory — Config + RBAC v2
+// CoreInventory — Config + RBAC v3 (Final)
 // ===========================================
 
 define('DB_HOST',    'localhost');
@@ -44,70 +44,67 @@ function getDB(): PDO {
 }
 
 // ============================================================
-// ROLE-BASED ACCESS CONTROL (RBAC)
+// RBAC PERMISSION MAP
 // ============================================================
 /*
-  PERMISSIONS MAP:
-  ─────────────────────────────────────────────────────
-  Permission              Admin   Manager   Staff
-  ─────────────────────────────────────────────────────
-  view_dashboard           ✓        ✓         ✓
-  view_products            ✓        ✓         ✓
-  manage_products          ✓        ✓         ✗
-  view_receipts            ✓        ✓         ✓
-  manage_receipts          ✓        ✓         ✓
-  validate_receipts        ✓        ✓         ✗
-  view_deliveries          ✓        ✓         ✓
-  manage_deliveries        ✓        ✓         ✓
-  validate_deliveries      ✓        ✓         ✗
-  view_transfers           ✓        ✓         ✓
-  manage_transfers         ✓        ✓         ✓
-  validate_transfers       ✓        ✓         ✗
-  view_adjustments         ✓        ✓         ✓
-  manage_adjustments       ✓        ✓         ✗
-  validate_adjustments     ✓        ✓         ✗
-  view_ledger              ✓        ✓         ✓
-  view_warehouses          ✓        ✓         ✗
-  manage_warehouses        ✓        ✗         ✗
-  view_users               ✓        ✓         ✗
-  create_manager           ✓        ✗         ✗
-  create_staff             ✓        ✓         ✗
-  edit_user                ✓        ✓*        ✗  (* manager can edit staff only)
-  delete_user              ✓        ✗         ✗
-  view_categories          ✓        ✓         ✗
-  manage_categories        ✓        ✓         ✗
-  ─────────────────────────────────────────────────────
+  Feature                   Admin   Manager   Staff
+  ──────────────────────────────────────────────────
+  view_dashboard              ✓       ✓         ✓
+  view_products               ✓       ✓         ✓
+  manage_products             ✓       ✓         ✗   (create/edit/delete)
+  view_receipts               ✓       ✓         ✓
+  manage_receipts             ✓       ✓         ✓   (create)
+  validate_receipts           ✓       ✓         ✗   (validate/cancel)
+  view_deliveries             ✓       ✓         ✓
+  manage_deliveries           ✓       ✓         ✓   (create)
+  validate_deliveries         ✓       ✓         ✗
+  view_transfers              ✓       ✓         ✓
+  manage_transfers            ✓       ✓         ✓   (create)
+  validate_transfers          ✓       ✓         ✗
+  view_adjustments            ✓       ✓         ✓
+  manage_adjustments          ✓       ✗         ✗   (create/validate)
+  view_ledger                 ✓       ✓         ✓
+  view_warehouses             ✓       ✓         ✗
+  manage_warehouses           ✓       ✗         ✗
+  view_users                  ✓       ✓         ✗
+  create_manager              ✓       ✗         ✗
+  create_staff                ✓       ✓         ✗
+  edit_user                   ✓       ✓*        ✗   (* only staff)
+  delete_user                 ✓       ✗         ✗
+  manage_categories           ✓       ✓         ✗
 */
 
 define('PERMISSIONS', [
     'admin' => [
-        'view_dashboard', 'view_products', 'manage_products',
-        'view_receipts', 'manage_receipts', 'validate_receipts',
-        'view_deliveries', 'manage_deliveries', 'validate_deliveries',
-        'view_transfers', 'manage_transfers', 'validate_transfers',
-        'view_adjustments', 'manage_adjustments', 'validate_adjustments',
+        'view_dashboard',
+        'view_products',    'manage_products',
+        'view_receipts',    'manage_receipts',    'validate_receipts',
+        'view_deliveries',  'manage_deliveries',  'validate_deliveries',
+        'view_transfers',   'manage_transfers',   'validate_transfers',
+        'view_adjustments', 'manage_adjustments',
         'view_ledger',
-        'view_warehouses', 'manage_warehouses',
+        'view_warehouses',  'manage_warehouses',
         'view_users', 'create_manager', 'create_staff', 'edit_user', 'delete_user',
-        'view_categories', 'manage_categories',
+        'manage_categories',
     ],
     'manager' => [
-        'view_dashboard', 'view_products', 'manage_products',
-        'view_receipts', 'manage_receipts',
-        'view_deliveries', 'manage_deliveries',
-        'view_transfers', 'manage_transfers',
+        'view_dashboard',
+        'view_products',    'manage_products',
+        'view_receipts',    'manage_receipts',    'validate_receipts',
+        'view_deliveries',  'manage_deliveries',  'validate_deliveries',
+        'view_transfers',   'manage_transfers',   'validate_transfers',
         'view_adjustments',
         'view_ledger',
         'view_warehouses',
         'view_users', 'create_staff', 'edit_user',
-        'view_categories', 'manage_categories',
+        'manage_categories',
     ],
     'staff' => [
         'view_dashboard',
         'view_products',
-        'view_receipts', 'manage_receipts',
+        'view_receipts',   'manage_receipts',
         'view_deliveries', 'manage_deliveries',
-        'view_transfers', 'manage_transfers',
+        'view_transfers',  'manage_transfers',
         'view_adjustments',
         'view_ledger',
     ],
@@ -115,42 +112,38 @@ define('PERMISSIONS', [
 
 // Check if current user has a permission
 function can(string $permission): bool {
-    $role = $_SESSION['user']['role'] ?? '';
+    $role  = $_SESSION['user']['role'] ?? '';
     $perms = PERMISSIONS[$role] ?? [];
     return in_array($permission, $perms);
 }
 
-// Require permission — redirect with error if missing
+// Deny with redirect if permission missing
 function requirePermission(string $permission): void {
     requireLogin();
     if (!can($permission)) {
-        setFlash('error', 'Access denied. You do not have permission to perform this action.');
+        setFlash('error', 'Access denied. You do not have permission for this action.');
         header('Location: ' . BASE_URL . '/pages/dashboard.php');
         exit;
     }
 }
 
-// Get current user's role
-function userRole(): string {
-    return $_SESSION['user']['role'] ?? '';
+// Deny silently (for POST action guards — returns false instead of redirecting)
+function denyAction(string $permission, string $redirect): void {
+    if (!can($permission)) {
+        setFlash('error', 'Access denied.');
+        header('Location: ' . BASE_URL . $redirect);
+        exit;
+    }
 }
 
-// Check if current user is admin
-function isAdmin(): bool {
-    return userRole() === 'admin';
-}
-
-// Check if current user is manager or above
-function isManagerOrAbove(): bool {
-    return in_array(userRole(), ['admin', 'manager']);
-}
+function userRole(): string   { return $_SESSION['user']['role'] ?? ''; }
+function isAdmin(): bool      { return userRole() === 'admin'; }
+function isManagerOrAbove(): bool { return in_array(userRole(), ['admin','manager']); }
 
 // ============================================================
 // AUTH
 // ============================================================
-function isLoggedIn(): bool {
-    return isset($_SESSION['user_id']);
-}
+function isLoggedIn(): bool { return isset($_SESSION['user_id']); }
 
 function requireLogin(): void {
     if (!isLoggedIn()) {
@@ -159,12 +152,10 @@ function requireLogin(): void {
     }
 }
 
-function currentUser(): array {
-    return $_SESSION['user'] ?? [];
-}
+function currentUser(): array { return $_SESSION['user'] ?? []; }
 
 // ============================================================
-// FLASH MESSAGES
+// FLASH
 // ============================================================
 function setFlash(string $type, string $msg): void {
     $_SESSION['flash'] = ['type' => $type, 'msg' => $msg];
@@ -205,7 +196,6 @@ function statusColor(string $status): string {
     };
 }
 
-// Role badge colors
 function roleBadge(string $role): string {
     return match($role) {
         'admin'   => 'badge-done',
