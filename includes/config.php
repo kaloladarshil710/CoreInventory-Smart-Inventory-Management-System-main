@@ -13,7 +13,18 @@ define('DB_CHARSET', 'utf8mb4');
 // App Config
 define('APP_NAME', 'CoreInventory');
 define('APP_VERSION', '1.0.0');
-define('BASE_URL', 'http://localhost/coreinventory'); // Change to your URL
+
+// Auto-detect BASE_URL — works with any folder name
+(function() {
+    $protocol  = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host      = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    // Walk up from /includes/ to project root
+    $scriptDir = str_replace('\\', '/', dirname(dirname(__FILE__)));
+    $docRoot   = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT'] ?? ''));
+    $subfolder = str_replace($docRoot, '', $scriptDir);
+    $subfolder = rtrim($subfolder, '/');
+    define('BASE_URL', $protocol . '://' . $host . $subfolder);
+})();
 
 // Session
 session_start();
